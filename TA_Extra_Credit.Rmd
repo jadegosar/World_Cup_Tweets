@@ -1,0 +1,650 @@
+---
+title: "Text Analytics Extra Credit Project"
+output: html_document
+date: "2023-08-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Step 1: Defining the question
+The Men's World Cup in 2022 was one filled with team successes, failures, upsets, injuries, controversy, and at the very end one singular world champion. To be fair, each World Cup is filled with moments just like the one the most previous one, taking fans along for an emotional ride that is four years in the making. I wanted to explore the sentiment surrounding the World Cup, an event that stretches across international borders and captivates the world for a few months every time it rolls around. To investigate the big ideas and concepts surrounding the 2022 World Cup, I decided to get a dataset from Kaggle that contains tweets about the World Cup as well as a few other important variables such as date created, number of likes on the tweet, and the source of the tweet. Additionally, the dataset has categorized each tweet as having a "positive", "negative", or "neutral" sentiment. Due to this dataset already contained sentiments of the tweet, I will focus more on contextualizing important topics throughout the World Cup and tracking sentiment over time. This will be completed through cleaning data specific to twitter and visualization wordclouds to show bigrams that are of importance in the dataset. Then sentiment over time will be explored in the initial data analysis and LDA will be performed to show the topics that were most important in a sample of the dataset.
+
+
+# Step 2: Collecting the data
+
+Load necessary packages
+
+```{r}
+library(quanteda)
+library(readtext)
+library(tidyverse)
+library(tidytext) # for tidy data format text processing
+library(sentimentr)
+library(caret)
+library(broom)
+```
+
+Load the CSV file where world cup tweet data is stored
+
+```{r}
+# Load the .CSV data.
+world_cup_raw <- readtext("fifa_world_cup_2022_tweets.csv", text_field = "Tweet")
+
+# Update column names
+world_cup_raw <- world_cup_raw %>%
+  rename(RowID = V1,
+         Date_Created = Date.Created,
+         Num_Likes = Number.of.Likes,
+         Source_of_Tweet = Source.of.Tweet)
+
+dim(world_cup_raw)
+summary(world_cup_raw)
+```
+
+# Step 3: Cleaning the data
+
+Change date created column to be better formatted for analysis of sentiment over time and make sentiment a variable of factor type.
+
+```{r}
+# Convert "Date_Created" column to a POSIXct format
+world_cup_raw$Date_Created <- as.POSIXct(world_cup_raw$Date_Created, format = "%Y-%m-%d %H:%M:%S")
+
+# Extract date, hour, and minute of tweet from date_created column
+world_cup_raw$Date_Created <- format(world_cup_raw$Date_Created, format = "%Y-%m-%d %H:%M")
+
+world_cup_raw$Sentiment <- as.factor(world_cup_raw$Sentiment)
+
+head(world_cup_raw)
+```
+
+Take a sample of the dataset to begin analysis.
+
+```{r}
+set.seed(1574829)# for replicability 
+world_cup_raw_samp <- slice_sample(world_cup_raw,n=10000)# take a sample
+
+wc_raw_token <- world_cup_raw_samp %>% unnest_tokens(word, text)
+
+head(wc_raw_token)
+```
+
+## Initial Analysis
+Show the top words across the tweets, not including stop words. This illustrates a clear problem that I will be tackling during the cleaning process and that is the language used in tweets. First of all, all the tweets contain the hashtag #worldcup2022 as this was the hashtag used to scrape tweets that were about the 2022 World Cup. Additionally, some tweets include references to pictures, memes, or even other people's tweets that they are quoting when they tweet, as illustrated by the high volume of "https" and "t.co" shown below. Overall, the output below does not provide additional information outside of what we already know which is that these tweets are about the World Cup and that it was held in Qatar.
+
+```{r}
+data(stop_words) # comes from tidytext package
+wc_token <- wc_raw_token %>% anti_join(stop_words)
+
+wc_token %>% count(word, sort = TRUE)%>% filter(n > 500)
+```
+
+Below is the distribution of sentiment in the sample I took from the dataframe. It also provides a peek at what the data looks like by summarizing the top top ten records in the corpus I created.
+
+```{r}
+corpus1 <- quanteda::corpus(world_cup_raw_samp, text_field = "text")
+
+table(quanteda::docvars(corpus1, field = "Sentiment"))
+
+summary(corpus1,10)
+```
+
+The following code turns the corpus into sentences, allowing us to extract individual tweets and shows how we can subset the data based on the sentiment of the tweet.
+
+```{r}
+corpus_sentences <- corpus_reshape(corpus1, to = "sentences")
+corpus_sentences[50]
+
+corpus_edge <- corpus_subset(corpus1, Sentiment == "positive")
+summary(corpus_edge, 10)
+```
+
+This tokenizes the corpus while using some preproccessing step from the quanteda package. You will see in the output that every tweet contains "#worldcup2022".
+
+```{r}
+corpus_tokens <- corpus1 %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, 
+         remove_symbols = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(pattern = stopwords()) %>% 
+  tokens_wordstem()
+
+head(corpus_tokens,3)
+```
+
+The below output shows the words with the highest collocation scores from the dataset, which I mainly created to compare to later results to see if significant changes are made as I further clean the dataset.
+
+```{r}
+tokens_reviews <- tokens(corpus1, remove_punct = TRUE) 
+
+tokens_collocations <-  tokens_select(tokens_reviews, pattern = "^[A-Z]", 
+                                   valuetype = "regex", 
+                                   case_insensitive = FALSE, 
+                                   padding = TRUE) %>% 
+               quanteda.textstats::textstat_collocations(min_count = 10, size = 2)
+
+head(tokens_collocations, 10)
+```
+
+```{r}
+wc_raw_token2 <- quanteda::tokens(world_cup_raw_samp$text, 
+                           what = "word", 
+                           remove_numbers = TRUE, 
+                       remove_punct = TRUE,
+                       remove_symbols = TRUE)
+
+wc_raw_token2 <- wc_raw_token2 %>%
+  tokens_remove(stopwords(source = "smart")) %>%
+  tokens_wordstem()
+
+wc_raw_dfm <- wc_raw_token2 %>%
+  tokens_remove(stopwords(source = "smart")) %>%
+  tokens_tolower %>%   
+  dfm()
+```
+
+Create BiGrams with library quanteda in order to create word cloud.
+
+```{r}
+wc_ngrams <- wc_raw_token2 %>%
+  tokens_ngrams(n=2)%>%
+    dfm()
+```
+
+In the below wordcloud, it is clear that many hashtags, particularly ones related to #worldcup in some variation, are very prevalent in the dataset. This is likely because there were many variations of the hashtag #worldcup2022 utilized by users tweeting about the world cup. The next step I took to clean the data was to remove as many variations of this hashtag as possible.
+
+```{r}
+library(quanteda.textplots)# for word clouds
+textplot_wordcloud(wc_ngrams, min_size = 0.5,
+  max_size = 4,
+  min_count = 3,
+  max_words = 200,
+  color = "darkblue",
+  font = NULL,
+  adjust = 0,
+  rotation = 0.1,
+  random_order = FALSE,
+  random_color = FALSE,
+  ordered_color = FALSE,
+  labelcolor = "gray20",
+  labelsize = 2.5,
+  labeloffset = 0,
+  fixed_aspect = TRUE,
+  comparison = FALSE)
+```
+
+## Removing commonly used hashtags that do not add meaning and links to pictures/videos
+
+```{r}
+library(stringr)
+
+wc_copy <- world_cup_raw_samp
+
+# Remove various hashtags and image text from the text column in a case-insensitive manner
+wc_copy$text <- gsub("(?i)#worldcup|(?i)#worldcup2022|(?i)worldcup|(?i)#qatar2022|(?i)#cupqatar|(?i)#fifaworldcup|(?i)#qatar|(?i)qatar2022|https://\\S+", "", wc_copy$text)
+
+# Print the updated data frame
+print(wc_copy)
+```
+
+Remove stop words to look at top 20 most frequent singular words
+
+```{r}
+data(stop_words) # comes from tidytext package
+
+wc_raw_token2 <- wc_copy %>% unnest_tokens(word, text)
+
+wc_token2 <- wc_raw_token2 %>% anti_join(stop_words)
+
+top_words <- wc_token2 %>% count(word, sort = TRUE)%>% filter(n > 250)
+
+print(top_words, 20)
+```
+
+Creating a corpus from the copied data with cleaner tweet data.
+
+```{r}
+corpus2 <- quanteda::corpus(wc_copy, text_field = "text")
+```
+
+Tokenize the corpus above to extract collocations.
+
+```{r}
+corpus_tokens2 <- corpus2 %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE, 
+         remove_symbols = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(pattern = stopwords()) %>% 
+  tokens_wordstem()
+
+head(corpus_tokens2,3)
+```
+
+Shown below are the 10 most common words according to the collocation analysis. The only major difference between this analysis and the one above, done before the cleaning of the hashtags, is that it shows changes in the z score of many values, including decreasing "FIFA world" enough that "world cup" jumps it in importance.
+
+```{r}
+tokens_reviews2 <- tokens(corpus2, remove_punct = TRUE) 
+
+tokens_collocations2 <-  tokens_select(tokens_reviews2, pattern = "^[A-Z]", 
+                                   valuetype = "regex", 
+                                   case_insensitive = FALSE, 
+                                   padding = TRUE) %>% 
+               quanteda.textstats::textstat_collocations(min_count = 10, size = 2)
+
+head(tokens_collocations2, 10)
+```
+
+As shown above in the way the tweets are tokenized, there are some additional steps that need to be taken in the cleaning process, namely the removal of emojis that were used in tweets. I originally intended to convert these emojis to their meaning in text as they can provide a lot of context to the sentiment and meaning of the tweet; however, I struggled to find code that would do this accurately and ones that contained a full library of emojis that could be translated. This reason, paired with having sentiment already as a variable in the dataset, I pivoted to instead use code I found from someone who has cleaned Tweet data before which is run on the 'text' field containing tweets before processing using the quanteda package. The function defined below is the one used to clean the columns containing the tweet data as text.
+
+```{r}
+clean <- function (text) {
+  str_remove_all(text," ?(f|ht)(tp)(s?)(://)(.*)[.|/](.*)") %>%
+                            # Remove mentions
+                            str_remove_all("@[[:alnum:]_]*") %>%
+                            # Remove hash tags
+                            str_remove_all("#[[:alnum:]_]+") %>%
+                            # Replace "&" character reference with "and"
+                            str_replace_all("&amp;", "and") %>%
+                            # Remove punctuation, using a standard character class
+                            str_remove_all("[[:punct:]]") %>%
+                            # remove digits
+                            str_remove_all("[[:digit:]]") %>%
+                            # Remove "RT: " from beginning of retweets
+                            str_remove_all("^RT:? ") %>%
+                            # Replace any newline characters with a space
+                            str_replace_all("\\\n|\\\r", " ") %>%
+                            # remove strings like "<U+0001F9F5>"
+                            str_remove_all("<.*?>") %>%
+                            # removing emojies 
+                            str_remove_all("[[:emoji:]]") %>%
+                            # Make everything lowercase
+                            str_to_lower() %>%
+                            # Remove any trailing white space around the text and inside a string
+                            str_squish()
+}
+```
+
+## Preprocessing the tweets that contain emojis
+
+```{r}
+wc_copy2 <- wc_copy
+
+wc_copy2$text <- clean(wc_copy2$text)
+
+wc_raw_token3 <- quanteda::tokens(wc_copy2$text, 
+                           what = "word", 
+                           remove_numbers = TRUE, 
+                       remove_punct = TRUE,
+                       remove_symbols = TRUE)
+
+wc_raw_token3 <- wc_raw_token3 %>%
+  tokens_remove(stopwords(source = "smart")) %>%
+  tokens_wordstem()
+
+wc_raw_dfm2 <- wc_raw_token3 %>%
+  tokens_remove(stopwords(source = "smart")) %>%
+  tokens_tolower %>%   
+  dfm()
+```
+
+## Create bigrams to explore dataset
+
+Look at the most common bigrams with the now cleaned tweet data. There is a clear improvement in the variety of words that are getting shown now, with bigrams such as "Morgan Freeman" being shown which I found to be interesting. I wanted to create custom bigrams next to better illustrate relationships between the words.
+
+```{r}
+library(quanteda.textstats)
+library(quanteda.textplots)
+
+#Create N Grams with library quanteda
+wc_ngrams2 <- wc_raw_token3 %>%
+  tokens_ngrams(n=2)%>%
+    dfm()
+
+textplot_wordcloud(wc_ngrams2, min_size = 0.5,
+  max_size = 4,
+  min_count = 3,
+  max_words = 200,
+  color = "darkblue",
+  font = NULL,
+  adjust = 0,
+  rotation = 0.1,
+  random_order = FALSE,
+  random_color = FALSE,
+  ordered_color = FALSE,
+  labelcolor = "gray20",
+  labelsize = 3,
+  labeloffset = 0,
+  fixed_aspect = TRUE,
+  comparison = FALSE)
+```
+
+This following code creates various bigrams using the words "goal" and "team" as these are important words in soccer and can illustrate important ideas related to these in the tweets.
+
+```{r}
+wc_ngrams2 <- wc_raw_token3 %>%
+  tokens_ngrams(n=2)# Doing this step as tokens_compound works only on tokens
+
+cust_bigram <- tokens_compound(wc_ngrams2, phrase("goal*"))
+cust_bigram <- tokens_select(cust_bigram, phrase("goal_*"))
+
+cust_bigram<-dfm(cust_bigram)
+
+textplot_wordcloud(cust_bigram, min_size = 0.5,   max_size = 4,
+  min_count = 3,   max_words = 200,   color = "darkblue",   font = NULL,
+  adjust = 0, rotation = 0.1, random_order = FALSE,   random_color = FALSE,
+  ordered_color = FALSE,   labelcolor = "gray20",   labelsize = 1.5,
+  labeloffset = 0,   fixed_aspect = TRUE,   comparison = FALSE)
+```
+
+```{r}
+cust_bigram2 <- tokens_compound(wc_ngrams2, phrase("team*"))
+cust_bigram2 <- tokens_select(cust_bigram2, phrase("team_*"))
+
+cust_bigram2 <- dfm(cust_bigram2)
+
+textplot_wordcloud(cust_bigram2, min_size = 0.5,   max_size = 4,
+  min_count = 3,   max_words = 200,   color = "darkblue",   font = NULL,
+  adjust = 0, rotation = 0.1, random_order = FALSE,   random_color = FALSE,
+  ordered_color = FALSE,   labelcolor = "gray20",   labelsize = 1.5,
+  labeloffset = 0,   fixed_aspect = TRUE,   comparison = FALSE)
+```
+
+The two bigrams below extrapolate team to words before and after so now bigrams such as "team_win" and "footbal team" are shown. One thing I noticed right off the bat was that bigrams such as "team support" and "favourite team" are larger than ones that may contain more negative sentiments. Also there are teams that were playing in the early rounds of the World Cup shown which led me to believe that the cleaning measures I have implemented are helping to better understand the data in context.
+
+```{r}
+cust_bigram3 <- tokens_compound(wc_ngrams2, phrase("team*|*team"))
+cust_bigram3 <- tokens_select(cust_bigram3, phrase("team_*|*_team"))
+
+cust_bigram3 <- dfm(cust_bigram3)
+
+textplot_wordcloud(cust_bigram3, min_size = 0.5,   max_size = 4,
+  min_count = 3,   max_words = 200,   color = "darkblue",   font = NULL,
+  adjust = 0, rotation = 0.1, random_order = FALSE,   random_color = FALSE,
+  ordered_color = FALSE,   labelcolor = "gray20",   labelsize = 1.5,
+  labeloffset = 0,   fixed_aspect = TRUE,   comparison = FALSE)
+```
+
+One insight I gained from the wordcloud created below is the ability to see the phrase "valencia goal" which, after I looked into what this could represent, makes sense for the sample being taken because Enner Valencia scored two goals against Qatar in the opening game of group play for Ecuador. Interestingly enough Valencia also had a goal ruled offside by VAR, which is also shown in the wordcloud by bigrams such as "goal disallow", "goal offside", and "var goal". This was a major headline of the day and the various aspects of this story line are actually represented in the worldcloud below which I thought was interesting!
+
+```{r}
+cust_bigram4 <- tokens_compound(wc_ngrams2, phrase("goal*|*goal"))
+cust_bigram4 <- tokens_select(cust_bigram4, phrase("goal_*|*_goal"))
+
+cust_bigram4 <- dfm(cust_bigram4)
+
+textplot_wordcloud(cust_bigram4, min_size = 0.5,   max_size = 4,
+  min_count = 3,   max_words = 200,   color = "darkblue",   font = NULL,
+  adjust = 0, rotation = 0.1, random_order = FALSE,   random_color = FALSE,
+  ordered_color = FALSE,   labelcolor = "gray20",   labelsize = 1.5,
+  labeloffset = 0,   fixed_aspect = TRUE,   comparison = FALSE)
+```
+
+I ran another collocation analysis on the now cleaned data, returning the top 20 most frequently collocated words in the sample. This shows that the opening ceremony, live tv, Ecaudor and Qatar are popular topics in this sample of the data which indicates that these tweets occurred at the beginning of the World Cup. It also tells us who was playing in the most discussed game of the day by showing Qatar vs. Ecuador as important collocated words and the name of the player of the match Enner Valencia.
+
+```{r}
+library(quanteda.textstats)
+library(quanteda.textplots)
+
+text_sentences <- wc_copy2$text %>%
+  tolower() %>%
+  paste0(collapse= " ") %>%
+  stringr::str_split(fixed(".")) %>%
+  unlist() %>%
+  stringr::str_squish()
+
+text_tokens <- tokens(text_sentences, remove_punct = TRUE) %>%
+  tokens_remove(stopwords("english"))
+
+# extract collocations
+text_coll <- textstat_collocations(text_tokens, size = 2, min_count = 100)
+text_coll[1:12,1:5]
+```
+
+```{r}
+wc_raw <- world_cup_raw
+wc_raw$text <- clean(wc_raw$text)
+
+dim(wc_raw)
+glimpse(wc_raw)
+```
+
+```{r}
+text_sentences2 <- wc_raw$text %>%
+  tolower() %>%
+  paste0(collapse= " ") %>%
+  stringr::str_split(fixed(".")) %>%
+  unlist() %>%
+  stringr::str_squish()
+
+text_tokens2 <- tokens(text_sentences2, remove_punct = TRUE) %>%
+  tokens_remove(stopwords("english"))
+
+# extract collocations
+text_coll2 <- textstat_collocations(text_tokens2, size = 2, min_count = 100)
+text_coll2[1:20,1:5]
+```
+
+
+# Step 4: Analyzing the data
+
+Filter the data for only complete rows
+
+```{r}
+sum(!complete.cases(wc_raw))
+
+# Keep only complete rows
+complete_cases <- complete.cases(wc_raw)
+
+wc_complete <- wc_raw[complete_cases, ]
+
+# Checking that number of incomplete cases is 0
+sum(!complete.cases(wc_complete))
+
+head(wc_complete)
+```
+
+## Exploratory Data Analysis
+
+Find the frequency of the sentiments in the dataset.
+
+```{r}
+wc_complete %>%
+count(Sentiment)%>%
+mutate(freq=n/sum(n))
+```
+
+Create a plot that shows sentiment over the time across the dataset. It is clear that there is a large spike in tweets that looks to happen in the early afternoon, likely when opening ceremonies and the first game was played. From this it looks like the spike in negative tweets at this time are more significant than tweets that are in the categories of positive and neutral. This idea will be invested further in the following visualizations.
+
+```{r}
+library(ggplot2)
+library(lubridate)
+
+ggplot(wc_complete, aes(x = Date_Created, group = Sentiment, color = Sentiment)) +
+  geom_line(stat = "count") +
+  labs(x = "Minute", y = "Tweet Count", title = "Aggregate Counts of Tweets by Sentiment (By Minute)") +
+  theme_minimal()
+
+```
+
+This graph shows a similar representation of the data as the visualization above but is grouped by hours of the day to show more distinct trends in the data. It is clear from this graph that hours 15-16 are when the most amount of tweets about the World Cup were put out by users, with what looks like a heavier negative sentiment in the 16th hour. 
+
+```{r}
+# Extract the hour from each date string
+wc_complete$hours <- substr(wc_complete$Date_Created, 12, 13)
+
+# Convert the extracted hours to numeric
+wc_complete$hours <- as.numeric(wc_complete$hours)
+
+ggplot(wc_complete, aes(x = hours, fill = Sentiment)) +
+  geom_bar(position = "stack") +
+  labs(x = "Hour of Day", y = "Tweet Count", title = "Aggregate Counts of Tweets by Sentiment (By Hour)") + scale_fill_manual(values = c(neutral = "gray", positive = "green", negative = "red")) +
+  theme_minimal()
+```
+
+This formats the date created variable so that hour and minute can be extracted from it to create plots of changes in sentiment over the hours of day 1 as well as the minutes within each hour aggregated across the day. From these graphs, a few trends are clear. First off, when interaction on twitter with the World Cup was the highest, there is a larger neutral and negative sentiment compared to positive. Additionally, tweets seem to occur more frequently at the top of the hour than the latter half of each hour. At this point is when the highest number of tweets with negative sentiment were sent out, possible representing sentiment surrounding the early goal that was overturned for Ecuador.
+
+```{r}
+wc_complete$Date_Created <- as.POSIXct(wc_complete$Date_Created, format = "%Y-%m-%d %H:%M")
+
+# Extract hour from Date_Created
+wc_complete$hours <- format(wc_complete$Date_Created, format = "%H")
+wc_complete$minute <- format(wc_complete$Date_Created, format = "%M")
+
+# Plot sentiment changes over hours
+ggplot(wc_complete, aes(x = hours, color = Sentiment, group = Sentiment)) +
+  geom_line(stat = "count") +
+  labs(x = "Hour of Day", y = "Tweet Count", title = "Sentiment Changes over Hours of the Day 1") +
+  scale_color_manual(values = c(neutral = "blue2", positive = "green", negative = "red")) +
+  theme_minimal()
+
+# Plot sentiment changes over minute
+ggplot(wc_complete, aes(x = minute, color = Sentiment, group = Sentiment)) +
+  geom_line(stat = "count") +
+  labs(x = "Minute of the Hour", y = "Tweet Count", title = "Sentiment Changes over Minutes of each Hour") +
+  scale_color_manual(values = c(neutral = "blue2", positive = "green", negative = "red")) +
+  theme_minimal()
+```
+
+## Sentiment Analysis
+
+```{r}
+positive_words_bing <- scan("positive-words.txt", what = "char", sep = "\n", skip = 35, quiet = T)
+negative_words_bing <- scan("negative-words.txt", what = "char", sep = "\n", skip = 35, quiet = T)
+sentiment_bing <- dictionary(list(positive = positive_words_bing, negative = negative_words_bing))
+```
+
+Explore sentiment scores of the tweets in the sample taken.
+
+```{r}
+set.seed(748204)
+wc_raw_samp <- wc_raw[sample(nrow(wc_raw), 5000), ]# take a small sample
+
+corp_tweets <- corpus(wc_raw_samp, text_field = "text")# Create corpus
+
+dfm_sentiment <- corp_tweets %>% tokens() %>% dfm %>% dfm_lookup(sentiment_bing)
+dfm_sentiment
+dfm_sentiment_df <- data.frame(dfm_sentiment)
+dfm_sentiment_df$net <- (dfm_sentiment_df$positive)-(dfm_sentiment_df$negative)
+
+# Document level summary
+summary(dfm_sentiment_df)
+```
+
+```{r}
+# Proportions instead of numbers
+dfm_sentiment_prop <- dfm_weight(dfm_sentiment, scheme = "prop")
+dfm_sentiment_prop
+```
+
+## Plotting Sentiments
+
+The graph below does not provide as many insights as I originally thought it would but it does show sections with no colors which indicates tweets that do not have a negative or postive score associated with them and therefore are categorized as "neutral" in the dataframe. I expected there to be more negative or positive polarity across the sample but that could come from the limited length of text available in tweets as there was a character limit associated with Tweeting at this time.
+
+```{r}
+sentiment <- convert(dfm_sentiment_prop, "data.frame") %>%
+gather(positive, negative, key = "Polarity", value = "Share") %>%
+mutate(document = as_factor(doc_id)) %>%
+rename(Review = document)
+
+ggplot(sentiment, aes(Review, Share, fill = Polarity, group = Polarity)) +
+geom_bar(stat='identity', position = position_dodge(), size = 1) +
+scale_fill_brewer(palette = "Set1") +
+theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+ggtitle("Sentiment scores in Tweets about the 2022 World Cup (relative)")
+5
+```
+
+## Implementing LDA
+
+```{r}
+wc_tokens <- tokens(wc_raw_samp$text, what = "word", 
+                       remove_numbers = TRUE, remove_punct = TRUE,
+                       remove_symbols = TRUE)
+
+#Create DTM, but remove terms which occur in less than 1% of all documents 
+# and more than 90%
+wc_raw_dfm <- wc_tokens %>%
+  tokens_remove(stopwords(source = "smart")) %>%
+  #tokens_wordstem() %>%
+  tokens_tolower() %>%
+  dfm()%>% 
+  dfm_trim(min_docfreq = 0.01, max_docfreq = 0.90, docfreq_type = "prop")
+
+wc_demo_token1<-as.matrix(wc_raw_dfm)
+
+wc_demo_token1[1:3,1:7] 
+```
+
+Remove rows that do not have any of the terms of interest
+
+```{r}
+# Calculate the row sums of the matrix
+row_sums <- rowSums(wc_demo_token1)
+
+# Keep only the rows where the row sum is greater than 0
+wc_demo_token1 <- wc_demo_token1[row_sums > 0, ]
+```
+
+Find topic term probabilities
+
+```{r}
+library(topicmodels)
+set.seed(12345)
+K <- 15
+wc_lda <-LDA(wc_demo_token1, K, method="Gibbs", control=list(iter = 200, verbose = 25))
+
+term_topics <- tidy(wc_lda, matrix = "beta") #Topic Term Probabilities 
+term_topics
+```
+
+## Extract and plot the per-topic-per-word probabilities
+
+```{r}
+top_terms <- term_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 5) %>% 
+  arrange(topic, -beta)
+
+top_terms
+```
+
+```{r}
+top_terms %>%
+  mutate(term = reorder(term, beta)) %>% 
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free")
+```
+
+Examine gamme values
+
+```{r}
+wc_documents <- tidy(wc_lda, matrix = "gamma")
+wc_documents
+```
+
+```{r}
+top_documents <- wc_documents %>%
+  group_by(topic) %>%
+  slice_max(gamma, n = 5) %>% 
+  ungroup() %>%
+  arrange(topic, -gamma)
+top_documents
+```
+
+Understand which term in particular document is assigned to which topic.
+
+```{r}
+assignments <- augment(wc_lda)
+assignments
+```
+
+
+# Step 5: Sharing results
+
+The main thing that I found interesting in the collocation analysis is that you can clearly relate the bigrams to events that were happening in the World Cup on the first day from which this data is collected. One collocation that stuck out to me in particular when running the analysis on all the tweets that distinguished it from the same analysis run on a sample is that the words "human rights" are shown here. Human rights were a massive topic of discussion when it came to the World Cup because of the country the tournament was hosted in. There were many human right violations on the part of Qatar in the building and creation of the infrastructure required to host the World Cup there as well as their historical violations of LGBTQ+ rights. It is cool to see that this conversation was an important one among twitter users talking about the World Cup even as it began.
+
+From my exploratory data analysis, I was able to decipher a few clear trends as it relates to sentiment over time of the tweets. First off, when interaction on twitter with the World Cup was the highest, there is a larger neutral and negative sentiment compared to tweets with a positive sentiment. Additionally, tweets seem to occur more frequently at the top of the hour than the latter half of each hour. At this point is when the highest number of tweets with negative sentiment were sent out, possible representing sentiment surrounding the early goal that was overturned for Ecuador that have been shown to be a large topic of conversation in this dataset from the wordcloud visualizations.
+
+The LDA analysis that I completed shows a variety of information on the dataset. It shows the top terms depending on the beta values that covers a wide range of topics that made the first day of the World Cup particularly interesting. It also shows per-topic-per-word probabilities that highlight important terms such as "opening", "support", "luck" that show positive sentiment towards the teams kicking off the World Cup. It also shows which terms in documents are assigned to which topics and the top documents. All in all, without getting into extensive detail on what the output of the LDA analysis is, it shows that major topics in this dataset include tweets surrounding the opening of the World Cup, the teams playing in Group A, that streaming was a topic of discussion, and that many people were loving Enner Valencia's performance as well as his goal that got called back causing quite a stir.
