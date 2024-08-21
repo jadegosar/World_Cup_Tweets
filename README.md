@@ -16,7 +16,7 @@ After loading the CSV file where the 2022 FIFA World Cup tweets are stored, I be
 ### Analyzing the data
 After I had a cleaned dataset containing tweets without the superfluous language and links that were present, I moved on to contextualizing important topics that existed throughout the dataset. This entailed looking at the top 20 most frequent singular words, extracting collocations and analyzing the most compon words, and creating bigrams to represent important words combinations. After looking at generic bigrams, I decided to create custom bigrams based on the words "goal" and "team" as these are very signficant words in soccer and can illustrate important ideas related to them that are present in the tweets.
 
-<center><img src="images/TA_Pic_Portfolio.png" width="800" height="250"/></center>
+<center><img src="/TA_Wordcloud.png" width="800" height="250"/></center>
 
 The next step in the analysis process was to track sentiment over the time span the dataset represented to find trends that may be present, such as when sentiment was positive versus negative and whether that could be related to events that were happening at that moment. The final step in my text analysis was implementing Latent Dirichlet Allocation (LDA) to identify hidden topics in the text data and their relationship with sentiment to explore whether certain topics tended to be classified as having a specific sentiment. Overall, the analysis enabled me to explore important topics relating to the World Cup on the first day of play and discover important events that happened as well how the public felt about ex[eriencing these moments live.
 
